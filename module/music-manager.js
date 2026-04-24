@@ -212,24 +212,13 @@ export async function updateTurnMusic(combat, changes) {
 		return;
 	}
 
-	// No encounter override — check if the current combatant has personal turn music
-	// that should interrupt whatever is playing (Combat Theme or trait music).
+	// No encounter override — check if the current combatant has personal turn music.
 	const combatantToken = combat.combatant?.token ?? null;
 	const turnMusic = combatantToken ? getTokenMusic(combatantToken) : null;
-	if (turnMusic) {
-		const currentMusic = getCurrentMusic(combat);
-		const alreadyInterrupted = combat.getFlag(MODULE_ID, 'encounterInterrupted');
-		if (!alreadyInterrupted && currentMusic) {
-			combat.setFlag(MODULE_ID, 'encounterInterrupted', true);
-			await pauseEncounterTrack(combat, currentMusic);
-		}
-		updateCombatMusic(combat, turnMusic, combatantToken.id);
-		return;
-	}
 
 	// If the previous turn had interrupted, stop the turn music and resume the encounter track.
 	const wasInterrupted = combat.getFlag(MODULE_ID, 'encounterInterrupted');
-	if (wasInterrupted) {
+	if (wasInterrupted && !turnMusic) {
 		combat.setFlag(MODULE_ID, 'encounterInterrupted', false);
 		const currentMusic = getCurrentMusic(combat);
 		if (currentMusic) {
@@ -239,7 +228,6 @@ export async function updateTurnMusic(combat, changes) {
 				else await currentSound.stopAll();
 			}
 		}
-		// Resume the paused encounter sounds specifically.
 		const pausedIds = combat.getFlag(MODULE_ID, 'pausedSounds') ?? [];
 		for (const s of combatPaused.filter(s => pausedIds.includes(s.id))) await resume(s);
 		await combat.unsetFlag(MODULE_ID, 'pausedSounds');
@@ -247,7 +235,10 @@ export async function updateTurnMusic(combat, changes) {
 		return;
 	}
 
-	// Check for Combat Theme tokens first.
+	// Resolve the encounter-wide track (Combat Theme > trait > generic playlist).
+	let encounterMusic = null;
+
+	// Check for Combat Theme tokens.
 	const themeMap = new Map();
 	for (const combatant of combat.combatants.contents) {
 		if (!combatant.token) continue;
@@ -262,40 +253,52 @@ export async function updateTurnMusic(combat, changes) {
 	if (themeMap.size > 0) {
 		const themeHighest = getHighestPriority(themeMap);
 		const picked = pick(themeHighest);
-		updateCombatMusic(combat, picked.music, '');
-		return;
+		encounterMusic = picked.music;
 	}
 
 	// No Combat Theme — check for trait-based music rules (PF2e).
-	const traitRules = getSetting('traitRules') ?? [];
-	if (traitRules.length > 0) {
-		const hostileTraits = new Set();
-		for (const combatant of combat.combatants.contents) {
-			if (!combatant.token?.actor) continue;
-			if (combatant.token.disposition === CONST.TOKEN_DISPOSITIONS.FRIENDLY) continue;
-			for (const trait of (combatant.token.actor.system?.traits?.value ?? [])) hostileTraits.add(trait.toLowerCase());
-		}
-		if (hostileTraits.size > 0) {
-			const matchingRules = traitRules.filter((r) => r.trait && hostileTraits.has(r.trait.toLowerCase()) && r.music);
-			if (matchingRules.length > 0) {
-				const best = matchingRules.reduce((a, b) => b.priority > a.priority ? b : a);
-				updateCombatMusic(combat, best.music, '');
-				return;
+	if (!encounterMusic) {
+		const traitRules = getSetting('traitRules') ?? [];
+		if (traitRules.length > 0) {
+			const hostileTraits = new Set();
+			for (const combatant of combat.combatants.contents) {
+				if (!combatant.token?.actor) continue;
+				if (combatant.token.disposition === CONST.TOKEN_DISPOSITIONS.FRIENDLY) continue;
+				for (const trait of (combatant.token.actor.system?.traits?.value ?? [])) hostileTraits.add(trait.toLowerCase());
+			}
+			if (hostileTraits.size > 0) {
+				const matchingRules = traitRules.filter((r) => r.trait && hostileTraits.has(r.trait.toLowerCase()) && r.music);
+				if (matchingRules.length > 0) {
+					const best = matchingRules.reduce((a, b) => b.priority > a.priority ? b : a);
+					encounterMusic = best.music;
+				}
 			}
 		}
 	}
 
 	// Fall back to the standard priority playlist system.
-	let music = '';
-	let token = '';
-	const highestPriority = getHighestPriority(createPriorityList(combat.combatant?.tokenId));
-	const musicFound = highestPriority.find((p) => p.music === music);
-	if (!musicFound) {
-		const sorted = pick(highestPriority);
-		token = sorted.token;
-		music = sorted.music;
+	if (!encounterMusic) {
+		const highestPriority = getHighestPriority(createPriorityList(combat.combatant?.tokenId));
+		const musicFound = highestPriority.find((p) => p.music === '');
+		if (!musicFound) {
+			const sorted = pick(highestPriority);
+			if (sorted.music) encounterMusic = sorted.music;
+		}
 	}
-	if (music) updateCombatMusic(combat, music, token);
+
+	if (!encounterMusic) return;
+
+	// Now apply turn music interruption if needed.
+	if (turnMusic) {
+		const alreadyInterrupted = combat.getFlag(MODULE_ID, 'encounterInterrupted');
+		if (!alreadyInterrupted) {
+			combat.setFlag(MODULE_ID, 'encounterInterrupted', true);
+			await pauseEncounterTrack(combat, encounterMusic);
+		}
+		updateCombatMusic(combat, turnMusic, combatantToken.id);
+	} else {
+		updateCombatMusic(combat, encounterMusic, '');
+	}
 }
 
 window.CombatMusicMaster = {
