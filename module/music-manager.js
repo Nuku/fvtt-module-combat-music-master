@@ -73,10 +73,17 @@ export async function updateCombatMusic(combat, music, token) {
 				else await oldSound.stopAll();
 			}
 		}
-		if (getSetting('pauseTrack') && sound.documentName === 'PlaylistSound') resume(sound);
-		else {
-			if (sound.documentName === 'PlaylistSound') sound.parent.playSound(sound);
-			else sound.playAll();
+		// Only resume if this sound wasn't deliberately paused as an encounter track.
+		const pausedIds = combat.getFlag(MODULE_ID, 'pausedSounds') ?? [];
+		const soundIsPaused = sound.documentName === 'PlaylistSound'
+			? pausedIds.includes(sound.id)
+			: (sound.sounds?.contents ?? []).some(s => pausedIds.includes(s.id));
+		if (!soundIsPaused) {
+			if (getSetting('pauseTrack') && sound.documentName === 'PlaylistSound') resume(sound);
+			else {
+				if (sound.documentName === 'PlaylistSound') sound.parent.playSound(sound);
+				else sound.playAll();
+			}
 		}
 	}
 	combat._combatMusic = music;
