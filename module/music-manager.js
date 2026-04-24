@@ -167,11 +167,14 @@ export async function updateTurnMusic(combat, changes) {
 	// ── Step 2: Were we interrupted last turn? Resume the encounter track. ──
 	const wasInterrupted = combat.getFlag(MODULE_ID, 'encounterInterrupted');
 	if (wasInterrupted) {
-		// Stop the turn music (never pause it — turn music doesn't resume later).
+		// Stop or pause the turn music based on pauseTrack setting.
 		const currentMusic = getCurrentMusic(combat);
 		if (currentMusic) {
 			const currentSound = parseMusic(currentMusic);
-			if (!('error' in currentSound)) await stopSound(currentSound);
+			if (!('error' in currentSound)) {
+				if (getSetting('pauseTrack')) await pauseSound(currentSound);
+				else await stopSound(currentSound);
+			}
 		}
 		// Resume the paused encounter track.
 		const pausedEncounterMusic = combat.getFlag(MODULE_ID, 'pausedEncounterMusic');
