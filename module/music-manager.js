@@ -5,7 +5,7 @@ import { getTokenMusic } from './token.js';
 /*  State                                       */
 /* -------------------------------------------- */
 
-let ambiencePaused = []; // Sounds paused when combat started (ambience)
+let ambiencePaused = []; // kept for safety, no longer used for ambience
 
 function getCurrentMusic(combat) {
 	return combat._combatMusic || combat.getFlag(MODULE_ID, 'currentMusic') || '';
@@ -70,13 +70,20 @@ async function stopSound(sound) {
 /*  Ambience                                    */
 /* -------------------------------------------- */
 
-function pauseAllMusic() {
+function pauseAllMusic(combat) {
 	const combatPlaylistIds = new Set(getCombatMusic().map((p) => p.id));
-	ambiencePaused = game.playlists.playing
+	const playing = game.playlists.playing
 		.filter((p) => !combatPlaylistIds.has(p.id))
 		.flatMap((p) => p.sounds.contents.filter((s) => s.playing));
-	for (const s of ambiencePaused) s.update({ playing: false, pausedTime: s.sound?.currentTime ?? null });
+
+	// Note exactly what was playing so we can restart it after combat.
+	const noted = playing.map((s) => stringifyMusic(s));
+	combat.setFlag(MODULE_ID, 'preCombatMusic', noted);
+
+	for (const s of playing) s.update({ playing: false, pausedTime: s.sound?.currentTime ?? null });
 }
+
+
 
 /* -------------------------------------------- */
 /*  Combat music tracking                       */
@@ -160,7 +167,7 @@ export async function updateTurnMusic(combat, changes) {
 	// ── Step 2: Were we interrupted last turn? Resume the encounter track. ──
 	const wasInterrupted = combat.getFlag(MODULE_ID, 'encounterInterrupted');
 	if (wasInterrupted) {
-		// Stop the turn music.
+		// Stop the turn music (never pause it — turn music doesn't resume later).
 		const currentMusic = getCurrentMusic(combat);
 		if (currentMusic) {
 			const currentSound = parseMusic(currentMusic);
@@ -182,7 +189,8 @@ export async function updateTurnMusic(combat, changes) {
 	// ── Step 3: Resolve and play the encounter track. ──
 	const encounterMusic = getEncounterMusic(combat);
 	if (!encounterMusic) return;
-	await switchTo(combat, encounterMusic, '');
+	// Pause the previous encounter track if pauseTrack is enabled, otherwise stop it.
+	await switchTo(combat, encounterMusic, '', { pausePrevious: getSetting('pauseTrack') });
 }
 
 // Resolve what the encounter-wide music should be:
@@ -245,23 +253,28 @@ function getEncounterMusic(combat) {
 
 async function playCombatMusic(combat) {
 	if (getCombatMusic().length === 0) return;
-	if (getSetting('pauseAmbience')) pauseAllMusic();
+	if (getSetting('pauseAmbience')) await pauseAllMusic(combat);
 	await updateTurnMusic(combat);
 }
 
-function resumePlaylists(combat) {
+async function resumePlaylists(combat) {
 	// Stop combat music.
 	const currentMusic = getCurrentMusic(combat);
 	if (currentMusic) {
 		const sound = parseMusic(currentMusic);
-		if (!('error' in sound)) stopSound(sound);
+		if (!('error' in sound)) await stopSound(sound);
 	}
 	combat._combatMusic = '';
-	combat.unsetFlag(MODULE_ID, 'encounterInterrupted');
-	combat.unsetFlag(MODULE_ID, 'pausedEncounterMusic');
-	// Resume ambience.
-	for (const sound of ambiencePaused) sound.update({ playing: true });
-	ambiencePaused = [];
+	await combat.unsetFlag(MODULE_ID, 'encounterInterrupted');
+	await combat.unsetFlag(MODULE_ID, 'pausedEncounterMusic');
+
+	// Resume whatever was playing before combat, by name.
+	const preCombatMusic = combat.getFlag(MODULE_ID, 'preCombatMusic') ?? [];
+	for (const flag of preCombatMusic) {
+		const sound = parseMusic(flag);
+		if (!('error' in sound)) await playSound(sound);
+	}
+	await combat.unsetFlag(MODULE_ID, 'preCombatMusic');
 }
 
 /* -------------------------------------------- */
